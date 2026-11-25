@@ -1,6 +1,6 @@
 # Daily HR coding-agent guide
 
-Daily HR is a Flutter and Dart employee-management app for iOS and Android. Employees use it to manage their own work records. HR administrators maintain employee information, review requests, and publish payroll. The current entry point in `lib/main.dart` runs the Flutter starter counter. The table describes the intended product.
+Daily HR is a Flutter and Dart employee-management app for iOS and Android. Employees use it to manage their own work records. HR administrators maintain employee information, review requests, and publish payroll. The entry point in `lib/main.dart` loads the local fictional demo store and launches the employee or HR workspace. The table describes the product workflows.
 
 | Module | Employee workflow | HR administrator workflow |
 | --- | --- | --- |
