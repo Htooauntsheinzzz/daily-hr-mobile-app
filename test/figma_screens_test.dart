@@ -121,7 +121,7 @@ void main() {
     tester,
   ) async {
     await mount(tester, RequestsPage(store: at('DH-001'), kind: 'Leave'));
-    expect(find.text('Annual leave · 23 Nov'), findsOneWidget);
+    expect(find.text('Annual Leave · 23 Nov'), findsOneWidget);
     expect(find.text('Pending'), findsOneWidget);
     await mount(tester, RequestsPage(store: at('hr'), kind: 'Leave'));
     expect(find.text('Leave requests'), findsOneWidget);

@@ -6,10 +6,14 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:daily_hr_mobile_application/src/app.dart';
+import 'package:daily_hr_mobile_application/src/auth.dart';
 import 'package:daily_hr_mobile_application/src/people.dart';
 import 'package:daily_hr_mobile_application/src/payroll.dart';
 import 'package:daily_hr_mobile_application/src/requests.dart';
 import 'package:daily_hr_mobile_application/src/store.dart';
+
+import 'fake_auth.dart';
+
 import 'package:daily_hr_mobile_application/src/ui.dart';
 
 void main() {
@@ -52,7 +56,7 @@ void main() {
     'login validation, retry, sign out and back do not expose workspace',
     (tester) async {
       await size(tester);
-      final store = HrStore();
+      final store = HrStore(auth: FakeAuth());
       await tester.pumpWidget(DailyHrApp(store: store, showSplash: false));
       await tester.tap(find.widgetWithText(FilledButton, 'Sign in'));
       await tester.pumpAndSettle();
@@ -60,7 +64,7 @@ void main() {
       expect(find.text('ⓘ  Enter your password.'), findsOneWidget);
       await tester.enterText(
         find.byType(TextFormField).at(0),
-        'maya@dailyhr.example',
+        'arun@gmail.com',
       );
       await tester.enterText(find.byType(TextFormField).at(1), 'wrong');
       await tester.ensureVisible(find.text('Sign in'));
@@ -70,11 +74,12 @@ void main() {
         find.textContaining('email or password is incorrect'),
         findsOneWidget,
       );
-      await tester.enterText(find.byType(TextFormField).at(1), 'DailyHR123!');
+      expect(find.text('Try HR Admin demo'), findsNothing);
+      await tester.enterText(find.byType(TextFormField).at(1), '123456');
       await tester.ensureVisible(find.text('Sign in'));
       await tester.tap(find.text('Sign in'));
       await tester.pumpAndSettle();
-      expect(find.text('Recent requests'), findsOneWidget);
+      expect(find.text('Quick actions'), findsOneWidget);
       await tester.tap(find.byType(NavigationDestination).last);
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('Sign out'));
@@ -82,7 +87,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Stay signed in'));
       await tester.pumpAndSettle();
-      expect(store.session, 'DH-001');
+      expect(store.session, 'hr');
       await tester.tap(find.text('Sign out'));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Sign out').last);
@@ -93,6 +98,62 @@ void main() {
       expect(find.text('Welcome back'), findsOneWidget);
     },
   );
+  testWidgets('HR admin with an employee record switches views', (
+    tester,
+  ) async {
+    await size(tester);
+    final store = HrStore(
+      auth: FakeAuth(
+        accounts: {
+          'arun@gmail.com/123456': const AuthRoles(
+            hr: true,
+            employee: {
+              'id': 'DH-003',
+              'name': 'Arun Patel',
+              'email': 'arun@gmail.com',
+              'position': 'HR Administrator',
+              'department': 'People Operations',
+            },
+          ),
+        },
+      ),
+    );
+    expect(await store.signIn('arun@gmail.com', '123456'), isNull);
+    await tester.pumpWidget(DailyHrApp(store: store, showSplash: false));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(NavigationDestination).last);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Switch to my employee view'));
+    await tester.tap(find.text('Switch to my employee view'));
+    await tester.pumpAndSettle();
+    expect(store.session, 'DH-003');
+    await tester.tap(find.byType(NavigationDestination).last);
+    await tester.pumpAndSettle();
+    expect(find.text('HR Administrator'), findsOneWidget);
+    await tester.ensureVisible(find.text('Switch to HR view'));
+    await tester.tap(find.text('Switch to HR view'));
+    await tester.pumpAndSettle();
+    expect(store.isHr, isTrue);
+  });
+  testWidgets('sign-in screen explains why the app signed someone out', (
+    tester,
+  ) async {
+    await size(tester);
+    final auth = FakeAuth();
+    final store = HrStore(auth: auth);
+    expect(await store.signIn('maya@dailyhr.example', '123456'), isNull);
+    await tester.pumpWidget(DailyHrApp(store: store, showSplash: false));
+    await tester.pumpAndSettle();
+    auth.signedInAs = const AuthRoles(
+      employee: {'id': 'DH-001', 'active': false},
+    );
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(store.session, isNull);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.textContaining('Your account is inactive'), findsOneWidget);
+  });
   testWidgets('department-only edits preserve position', (tester) async {
     await size(tester);
     final store = HrStore()..session = 'hr';
@@ -120,7 +181,7 @@ void main() {
       final store = HrStore()..session = 'DH-001';
       final second = store.submit(
         'Leave',
-        'Annual leave',
+        'Annual Leave',
         DateTime(2026, 11, 25),
         DateTime(2026, 11, 25),
         'Appointment',
@@ -259,14 +320,14 @@ void main() {
       final store = HrStore()..session = 'DH-001';
       final a = store.submit(
         'Leave',
-        'Annual leave',
+        'Annual Leave',
         DateTime(2026, 11, 25),
         DateTime(2026, 11, 25),
         'First reason',
       );
       final b = store.submit(
         'Leave',
-        'Annual leave',
+        'Annual Leave',
         DateTime(2026, 11, 26),
         DateTime(2026, 11, 26),
         'Second reason',
@@ -328,13 +389,13 @@ void main() {
     await tester.enterText(find.byType(TextFormField), 'Family visit');
     await tester.tap(find.text('Save reason'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Annual leave'));
+    await tester.tap(find.text('Annual Leave'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Sick leave'));
+    await tester.tap(find.text('Monthly Leave'));
     await tester.pumpAndSettle();
     expect(find.text('Family visit'), findsOneWidget);
-    expect(find.text('Sick leave'), findsOneWidget);
-    await tester.tap(find.text('Choose dates'));
+    expect(find.text('Monthly Leave'), findsOneWidget);
+    await tester.tap(find.text('Choose start date'));
     await tester.pumpAndSettle();
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();

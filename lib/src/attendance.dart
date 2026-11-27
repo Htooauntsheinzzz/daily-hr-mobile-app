@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'location.dart';
 import 'store.dart';
 import 'ui.dart';
 
@@ -43,6 +44,14 @@ class _AttendanceBodyState extends State<AttendanceBody> {
         const Heading('My attendance', size: 32),
         const SizedBox(height: 12),
         Text(fullDateLabel(shift?.start ?? now)),
+        if (s.workHours case final hours?) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Check-in ${hours.checkInLabel} · '
+            'Check-out ${hours.checkOutLabel}',
+            style: const TextStyle(fontSize: 13),
+          ),
+        ],
         const SizedBox(height: 36),
         Surface(
           color: forest,
@@ -116,7 +125,10 @@ class _AttendanceBodyState extends State<AttendanceBody> {
                   ),
                 ) ==
                 true) {
-              if (context.mounted) guarded(context, s.checkOut);
+              final error = await s.checkOutNow();
+              if (context.mounted) {
+                toast(context, error ?? 'Checked out. Have a good evening.');
+              }
             }
           }),
         ActionButton(
@@ -151,6 +163,8 @@ class ShiftSummary extends StatelessWidget {
             compact ? 'Hours' : 'Working hours',
             shift == null
                 ? '—'
+                : shift!.missedCheckOut
+                ? 'Not recorded'
                 : shift!.end == null
                 ? 'In progress'
                 : durationLabel(shift!.hours(now)),
@@ -193,66 +207,85 @@ class LocationPage extends StatefulWidget {
 }
 
 class _LocationPageState extends State<LocationPage> {
-  bool unavailable = false;
+  bool busy = false;
+  String? error;
+  LocationFailure? locationProblem;
+
+  Future<void> checkIn() async {
+    if (busy) return;
+    setState(() {
+      busy = true;
+      error = null;
+      locationProblem = null;
+    });
+    final result = await widget.store.checkInHere(
+      onLocationProblem: (failure) => locationProblem = failure,
+    );
+    if (!mounted) return;
+    if (result == null) {
+      Navigator.pop(context);
+      toast(context, 'Checked in at Rangsit University.');
+      return;
+    }
+    setState(() {
+      busy = false;
+      error = result;
+    });
+  }
+
   @override
-  Widget build(BuildContext context) => HrPage(
-    store: widget.store,
-    title: unavailable ? 'Location unavailable' : 'Check-in location',
-    back: 'Attendance',
-    builder: (context) => [
-      const SizedBox(height: 24),
-      if (unavailable)
-        const Text(
-          'Location access is needed for GPS check-in. Allow access and try again.',
-          style: TextStyle(fontSize: 16, height: 1.5),
-        )
-      else
+  Widget build(BuildContext context) {
+    final unavailable = locationProblem != null;
+    final online = widget.store.backend != null;
+    return HrPage(
+      store: widget.store,
+      title: unavailable ? 'Location unavailable' : 'Check-in location',
+      back: 'Attendance',
+      builder: (context) => [
+        const SizedBox(height: 24),
         Surface(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Heading(
-                unavailable ? 'Location is unavailable' : 'Bangkok office',
-                size: 24,
-              ),
+              const Heading('Rangsit University', size: 24),
               const SizedBox(height: 20),
               Text(
-                unavailable
-                    ? 'Location access is needed for GPS check-in. Allow access and try again.'
-                    : 'Record your current location with today’s check-in.',
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Demo location: no device GPS is collected.',
-                style: TextStyle(fontSize: 12),
+                online
+                    ? 'Check-in is only accepted on the Rangsit University '
+                          'campus. DailyHR reads your location once, when you '
+                          'check in. Check-out works from anywhere.'
+                    : 'Demo mode: no device location is collected.',
               ),
             ],
           ),
         ),
-      const SizedBox(height: 44),
-      ActionButton(unavailable ? 'Try again' : 'Use location and check in', () {
-        if (unavailable) {
-          setState(() => unavailable = false);
-        } else {
-          guarded(context, () {
-            widget.store.checkIn();
-            Navigator.pop(context);
-          });
-        }
-      }),
-      ActionButton(
-        unavailable ? 'Back to attendance' : 'Skip location access',
-        () {
-          if (unavailable) {
-            Navigator.pop(context);
-          } else {
-            setState(() => unavailable = true);
-          }
-        },
-        secondary: true,
-      ),
-    ],
-  );
+        if (error != null) ...[
+          const SizedBox(height: 20),
+          Text(error!, style: const TextStyle(fontSize: 16, height: 1.5)),
+        ],
+        const SizedBox(height: 44),
+        ActionButton(
+          busy
+              ? 'Checking your location…'
+              : error == null
+              ? 'Use my location and check in'
+              : 'Try again',
+          checkIn,
+        ),
+        if (locationProblem?.needsSettings ?? false)
+          ActionButton(
+            'Open Settings',
+            () => widget.store.location?.openSettings(locationProblem!.problem),
+            secondary: true,
+          ),
+        ActionButton(
+          'Back to attendance',
+          () => Navigator.pop(context),
+          secondary: true,
+        ),
+      ],
+    );
+  }
 }
 
 class CalendarBody extends StatefulWidget {
@@ -281,13 +314,10 @@ class _CalendarBodyState extends State<CalendarBody> {
         size: 22,
       ),
       const SizedBox(height: 12),
-      Text(
-        switch (attendanceStatus(widget.store, widget.store.me, selected)) {
-          'Absent' => 'No check-in',
-          final v => v,
-        },
-        style: const TextStyle(color: forest, fontWeight: FontWeight.w600),
-      ),
+      Text(switch (attendanceStatus(widget.store, widget.store.me, selected)) {
+        'Absent' => 'No check-in',
+        final v => v,
+      }, style: const TextStyle(color: forest, fontWeight: FontWeight.w600)),
       const SizedBox(height: 22),
       ShiftSummary(
         shift: widget.store.shiftFor(widget.store.session!, selected),
@@ -406,6 +436,13 @@ class AttendanceReviewBody extends StatefulWidget {
 
 class _AttendanceReviewBodyState extends State<AttendanceReviewBody> {
   late DateTime selected = dayOnly(widget.store.clock());
+  @override
+  void initState() {
+    super.initState();
+    // Pick up check-ins made on other phones since sign-in.
+    widget.store.refreshAttendance();
+  }
+
   @override
   Widget build(BuildContext context) => ScreenBody(
     children: [
@@ -538,9 +575,12 @@ String attendanceStatus(HrStore store, Employee employee, DateTime date) {
     );
     return onLeave ? 'On leave' : 'Absent';
   }
+  if (shift.missedCheckOut) return 'Missed check-out';
   if (shift.end == null) return 'Checked in';
-  return shift.start.hour > 9 ||
-          (shift.start.hour == 9 && shift.start.minute > 0)
+  // With Supabase, check-in is only accepted inside the check-in window, so
+  // anyone who checked in is on time. The demo data counts after 9:00 as late.
+  final lateAfter = store.workHours?.checkInUntil ?? 9 * 60;
+  return shift.start.hour * 60 + shift.start.minute > lateAfter
       ? 'Late'
       : 'Present';
 }

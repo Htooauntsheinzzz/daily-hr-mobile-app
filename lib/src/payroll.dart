@@ -472,16 +472,6 @@ Future<void> editPayAmount(
     ),
   );
   if (result == null) return;
-  store.requireHr();
-  switch (field) {
-    case 0:
-      e.base = result;
-    case 1:
-      e.rate = result;
-    case 2:
-      e.insurance = result;
-    case 3:
-      e.advance = result;
-  }
-  store.changed();
+  final error = await store.savePay(e, field, result);
+  if (error != null && context.mounted) toast(context, error);
 }

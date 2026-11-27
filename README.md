@@ -13,15 +13,7 @@ flutter doctor -v
 flutter pub get
 ```
 
-The app starts with an animated splash and restores the last demo session. On sign-in, expand **Local demo accounts** to fill credentials or exercise the offline state. Use **Try HR Admin demo** / **Try Employee demo** to select the workspace.
-
-| Workspace | Email | Password |
-| --- | --- | --- |
-| Employee: Maya Chen | maya@dailyhr.example | DailyHR123! |
-| Employee: Nina Park | nina@dailyhr.example | DailyHR123! |
-| HR administrator | hr@dailyhr.example | DailyHR123! |
-
-`unassigned@dailyhr.example` with the same password exercises missing-role feedback. Deactivated employees cannot sign in. Newly added fictional employees can use their work email and the demo password.
+The app starts with an animated splash and restores the last session. Sign-in uses Supabase email and password auth. Accounts listed in the `hr_admins` table open the HR workspace; accounts linked to an active row in `employees` open the employee workspace. Supabase keeps the session on the device. Copy `.env.example` to `.env` with the project URL and publishable key, and run `supabase/migrations/` and `supabase/seed.sql` in the Supabase SQL Editor before signing in.
 
 Changes persist locally between launches and role switches using SharedPreferences. Clearing the application's storage resets sample records. Authentication and location are simulated; no backend account or device GPS permission is needed. Backend selection and production integration remain open.
 
@@ -80,4 +72,4 @@ Project decisions and outstanding checks are recorded in [the decision log](spec
 
 The Figma inventory contains 243 frames (including state variants). Reference design context was retrieved for 230 frames; 13 requests were blocked by the Figma plan tool-call limit. See [screen coverage](spec-md/03-screen-coverage.md) for the mapping and remaining gaps. This is not a claim that all 243 frames have been visually certified.
 
-The source-design credentials are `maya@dailyhr.example` (Employee) and `arun@dailyhr.example` (HR Admin), password `DemoPass42`. Previous `DailyHR123!` credentials and `hr@dailyhr.example` still work. Select the appropriate demo workspace before signing in. Existing saved records are preserved; the new seed identity values apply to fresh demo data.
+Sign-in goes through Supabase (see above); the earlier static login has been removed. Existing saved records are preserved; the new seed identity values apply to fresh demo data.

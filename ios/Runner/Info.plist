@@ -6,6 +6,8 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>DailyHR checks that you are at Rangsit University when you check in.</string>
 	<key>CFBundleDisplayName</key>
 	<string>DailyHR</string>
 	<key>CFBundleExecutable</key>

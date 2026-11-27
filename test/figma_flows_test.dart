@@ -6,6 +6,9 @@ import 'package:daily_hr_mobile_application/src/people.dart';
 import 'package:daily_hr_mobile_application/src/payroll.dart';
 import 'package:daily_hr_mobile_application/src/requests.dart';
 import 'package:daily_hr_mobile_application/src/store.dart';
+
+import 'fake_auth.dart';
+
 import 'package:daily_hr_mobile_application/src/ui.dart';
 
 void main() {
@@ -146,12 +149,14 @@ void main() {
     expect(attendanceStatus(store, e, date), 'Late');
   });
 
-  test('Figma credentials and legacy demo credentials remain valid', () {
-    final store = HrStore();
-    expect(store.signIn('arun@dailyhr.example', 'DemoPass42', true), isNull);
-    expect(store.signIn('hr@dailyhr.example', 'DailyHR123!', true), isNull);
-    expect(store.signIn('maya@dailyhr.example', 'DemoPass42', false), isNull);
-    expect(store.balance('DH-001', 'Annual leave', 2026), 10);
-    expect(store.balance('DH-001', 'Sick leave', 2026), 6);
+  test('old demo credentials no longer sign in', () async {
+    final store = HrStore(auth: FakeAuth());
+    expect(await store.signIn('arun@dailyhr.example', 'DemoPass42'), isNotNull);
+    expect(await store.signIn('maya@dailyhr.example', 'DemoPass42'), isNotNull);
+    expect(await store.signIn('arun@gmail.com', '123456'), isNull);
+    expect(store.session, 'hr');
+    final now = DateTime(2026, 11, 24);
+    expect(store.leaveLeft('DH-001', store.leaveType('Annual Leave'), now), 6);
+    expect(store.leaveLeft('DH-001', store.leaveType('Monthly Leave'), now), 2);
   });
 }

@@ -121,8 +121,12 @@ class RequestsPage extends StatelessWidget {
           const SizedBox(height: 20),
           Row(
             children: [
-              for (final type in ['Annual leave', 'Sick leave']) ...[
-                if (type == 'Sick leave') const SizedBox(width: 12),
+              for (final (i, type)
+                  in store.leaveTypes
+                      .where((t) => t.allowance != null)
+                      .take(2)
+                      .indexed) ...[
+                if (i > 0) const SizedBox(width: 12),
                 Expanded(
                   child: Surface(
                     color: mist,
@@ -134,7 +138,7 @@ class RequestsPage extends StatelessWidget {
                           children: [
                             Expanded(
                               child: Text(
-                                type,
+                                type.name,
                                 style: const TextStyle(
                                   color: forest,
                                   fontSize: 15,
@@ -142,17 +146,44 @@ class RequestsPage extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            AssetIcon(
-                              type == 'Annual leave' ? 'calendar' : 'heart',
-                            ),
+                            AssetIcon(i == 0 ? 'calendar' : 'heart'),
                           ],
                         ),
                         const SizedBox(height: 14),
                         Heading(
-                          '${store.balance(store.session!, type, store.clock().year)} days',
+                          daysLabel(
+                            store.leaveLeft(
+                              store.session!,
+                              type,
+                              store.clock(),
+                              includePending: true,
+                            )!,
+                          ),
                           size: 28,
                         ),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 6),
+                        Text(
+                          'left of ${daysLabel(type.allowance!)} · resets '
+                          '${type.resets == 'month' ? 'monthly' : '1 January'}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        if (store.leaveTaken(
+                                  store.session!,
+                                  type,
+                                  store.clock(),
+                                  includePending: true,
+                                ) -
+                                store.leaveTaken(
+                                  store.session!,
+                                  type,
+                                  store.clock(),
+                                )
+                            case final pending when pending > 0)
+                          Text(
+                            '${daysLabel(pending)} waiting for approval',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        const SizedBox(height: 8),
                       ],
                     ),
                   ),
@@ -160,6 +191,15 @@ class RequestsPage extends StatelessWidget {
               ],
             ],
           ),
+          if (store.leaveTypes.where((t) => !t.paid).firstOrNull
+              case final unpaid?) ...[
+            const SizedBox(height: 14),
+            Text(
+              '${unpaid.name} is unpaid and opens once your other leave '
+              'is used up. Its days are deducted from salary.',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ],
           const SizedBox(height: 22),
         ],
         ActionButton(
@@ -201,7 +241,9 @@ class RequestDetail extends StatelessWidget {
       'Rejected' => 'The employee will see this request as rejected.',
       _ =>
         leave
-            ? 'Approval deducts ${r.days == 1 ? 'one day' : '${r.days} days'} from the selected leave balance.'
+            ? r.unpaid
+                  ? '${r.type} is unpaid: ${daysLabel(r.days)} will be deducted from salary.'
+                  : 'Approval deducts ${r.days == 1 ? 'one day' : '${r.days} days'} from the selected leave balance.'
             : 'Approved hours are included in this month’s payroll.',
     };
     if (await openPage<bool>(
@@ -221,9 +263,8 @@ class RequestDetail extends StatelessWidget {
           ),
         ) ==
         true) {
-      if (context.mounted) {
-        guarded(context, () => store.decide(r, status));
-      }
+      final error = await store.decideRequest(r, status);
+      if (error != null && context.mounted) toast(context, error);
     }
   }
 
@@ -287,6 +328,7 @@ class RequestDetail extends StatelessWidget {
                     'Duration',
                     '${r.days} working ${r.days == 1 ? 'day' : 'days'}',
                   ),
+                  if (r.unpaid) const DetailRow('Pay', 'Unpaid'),
                 ] else ...[
                   DetailRow('Work date', dateLabel(r.start)),
                   DetailRow('Start time', timeLabel(r.start)),
@@ -299,7 +341,9 @@ class RequestDetail extends StatelessWidget {
           ),
           const SizedBox(height: 30),
           if (r.status == 'Pending') ...[
-            if (store.isHr) ...[
+            if (store.isHr && store.isOwnRequest(r))
+              const Text('Another HR administrator must decide your request.')
+            else if (store.isHr) ...[
               ActionButton(
                 'Approve request',
                 () => decision(context, 'Approved'),
@@ -354,7 +398,9 @@ class RequestDetail extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 50),
-        if (r.status == 'Pending' && store.isHr) ...[
+        if (r.status == 'Pending' && store.isHr && store.isOwnRequest(r))
+          const Text('Another HR administrator must decide your request.')
+        else if (r.status == 'Pending' && store.isHr) ...[
           ActionButton(
             'Approve ${hoursLabel(r.hours)}',
             () => decision(context, 'Approved'),
@@ -381,7 +427,9 @@ class RequestForm extends StatefulWidget {
 }
 
 class _RequestFormState extends State<RequestForm> {
-  String type = 'Annual leave', reason = '';
+  late String type = widget.store.leaveTypes.first.name;
+  String reason = '';
+  bool submitting = false;
   DateTime? startDate, endDate;
   TimeOfDay? startTime, endTime;
   String? error;
@@ -398,22 +446,57 @@ class _RequestFormState extends State<RequestForm> {
   double? get hours => at(startTime) == null || at(endTime) == null
       ? null
       : at(endTime)!.difference(at(startTime)!).inMinutes / 60;
+
+  /// The last date the chosen leave type allows in one request: the end of
+  /// the month for Monthly Leave and the end of the year for Annual Leave.
+  DateTime leaveLastDate(DateTime from) =>
+      switch (widget.store.leaveType(type).resets) {
+        'month' => DateTime(from.year, from.month + 1, 0),
+        'year' => DateTime(from.year, 12, 31),
+        _ => DateTime(from.year + 1, from.month, from.day),
+      };
+
+  /// Keeps the end date on or after the start and inside the leave period.
+  void fitEndDate() {
+    final from = startDate;
+    if (from == null) return;
+    final to = endDate;
+    if (to == null || to.isBefore(from) || to.isAfter(leaveLastDate(from))) {
+      endDate = from;
+    }
+  }
+
+  Future<void> chooseLeaveDate({required bool start}) async {
+    final today = dayOnly(widget.store.clock());
+    if (!start && startDate == null) return chooseLeaveDate(start: true);
+    final first = start ? DateTime(today.year - 1) : startDate!;
+    final last = start
+        ? DateTime(today.year + 1, 12, 31)
+        : leaveLastDate(startDate!);
+    var initial = (start ? startDate : endDate) ?? (start ? today : startDate!);
+    if (initial.isBefore(first)) initial = first;
+    if (initial.isAfter(last)) initial = last;
+    final picked = await showDatePicker(
+      context: context,
+      helpText: start ? 'First day of leave' : 'Last day of leave',
+      firstDate: first,
+      lastDate: last,
+      initialDate: initial,
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      if (start) {
+        startDate = picked;
+      } else {
+        endDate = picked;
+      }
+      fitEndDate();
+    });
+  }
+
   Future<void> chooseDates() async {
     if (leave) {
-      final range = await showDateRangePicker(
-        context: context,
-        firstDate: DateTime(2020),
-        lastDate: DateTime(2100),
-        initialDateRange: startDate == null
-            ? null
-            : DateTimeRange(start: startDate!, end: endDate!),
-      );
-      if (range != null && mounted) {
-        setState(() {
-          startDate = range.start;
-          endDate = range.end;
-        });
-      }
+      await chooseLeaveDate(start: true);
     } else {
       final today = dayOnly(widget.store.clock());
       final d = await openPage<DateTime>(
@@ -486,7 +569,7 @@ class _RequestFormState extends State<RequestForm> {
     if (result != null && mounted) setState(() => reason = result);
   }
 
-  void submit() {
+  Future<void> submit() async {
     if (startDate == null ||
         (leave && endDate == null) ||
         (!leave && (startTime == null || endTime == null)) ||
@@ -504,22 +587,42 @@ class _RequestFormState extends State<RequestForm> {
       );
       return;
     }
-    try {
-      final r = widget.store.submit(
-        widget.kind,
-        leave ? type : 'Overtime',
-        leave ? startDate! : at(startTime)!,
-        leave ? endDate! : at(endTime)!,
+    if (submitting) return;
+    WorkRequest? r;
+    if (leave) {
+      setState(() => submitting = true);
+      final result = await widget.store.submitLeave(
+        type,
+        startDate!,
+        endDate!,
         reason,
       );
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => RequestDetail(store: widget.store, request: r),
-        ),
-      );
-    } on StateError catch (e) {
-      setState(() => error = e.message);
+      if (!mounted) return;
+      setState(() {
+        submitting = false;
+        error = result.error;
+      });
+      r = result.request;
+    } else {
+      try {
+        r = widget.store.submit(
+          widget.kind,
+          'Overtime',
+          at(startTime)!,
+          at(endTime)!,
+          reason,
+        );
+      } on StateError catch (e) {
+        setState(() => error = e.message);
+      }
     }
+    if (r == null || !mounted) return;
+    final saved = r;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => RequestDetail(store: widget.store, request: saved),
+      ),
+    );
   }
 
   @override
@@ -541,27 +644,69 @@ class _RequestFormState extends State<RequestForm> {
                 title: 'Choose leave type',
                 back: 'Request',
                 selected: type,
-                options: const {
-                  'Annual leave': 'Annual leave',
-                  'Sick leave': 'Sick leave',
+                options: {
+                  for (final t in widget.store.leaveTypes) t.name: t.name,
                 },
               ),
             );
-            if (value != null && mounted) setState(() => type = value);
+            if (value != null && mounted) {
+              setState(() {
+                type = value;
+                fitEndDate();
+              });
+            }
           },
         ),
+        if (widget.store.leaveLeft(
+              widget.store.session!,
+              widget.store.leaveType(type),
+              startDate ?? widget.store.clock(),
+              includePending: true,
+            )
+            case final left?)
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 4),
+            child: Text(
+              'You can take ${daysLabel(left)} of $type'
+              '${widget.store.leaveType(type).resets == 'month' ? ' this month' : ' this year'}.',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+        if (!widget.store.leaveType(type).paid)
+          const Padding(
+            padding: EdgeInsets.only(top: 6, bottom: 4),
+            child: Text(
+              'Unpaid leave: these days are deducted from your salary. '
+              'Available once your other leave is used up.',
+              style: TextStyle(fontSize: 13),
+            ),
+          ),
         const SizedBox(height: 10),
       ],
-      EntryTile(
-        leave ? 'Start and end date' : 'Work date',
-        startDate == null
-            ? 'Choose ${leave ? 'dates' : 'date'}'
-            : leave
-            ? '${dayKey(startDate!) == dayKey(endDate!) ? shortDateLabel(startDate!) : '${shortDateLabel(startDate!)} – ${shortDateLabel(endDate!)}'} · ${workingDays(startDate!, endDate!)} working ${workingDays(startDate!, endDate!) == 1 ? 'day' : 'days'}'
-            : shortDateLabel(startDate!),
-        icon: 'calendar',
-        onTap: chooseDates,
-      ),
+      if (leave) ...[
+        EntryTile(
+          'Start date',
+          startDate == null ? 'Choose start date' : shortDateLabel(startDate!),
+          icon: 'calendar',
+          onTap: () => chooseLeaveDate(start: true),
+        ),
+        EntryTile(
+          'End date',
+          startDate == null
+              ? 'Same as start date'
+              : '${shortDateLabel(endDate!)} · '
+                    '${workingDays(startDate!, endDate!)} working '
+                    '${workingDays(startDate!, endDate!) == 1 ? 'day' : 'days'}',
+          icon: 'calendar',
+          onTap: () => chooseLeaveDate(start: false),
+        ),
+      ] else
+        EntryTile(
+          'Work date',
+          startDate == null ? 'Choose date' : shortDateLabel(startDate!),
+          icon: 'calendar',
+          onTap: chooseDates,
+        ),
       if (!leave) ...[
         EntryTile(
           'Start time',
@@ -606,7 +751,7 @@ class _RequestFormState extends State<RequestForm> {
           ),
         ),
       const SizedBox(height: 32),
-      ActionButton('Submit request', submit),
+      ActionButton(submitting ? 'Submitting…' : 'Submit request', submit),
       if (leave)
         ActionButton('Cancel', () => Navigator.pop(context), secondary: true),
     ],

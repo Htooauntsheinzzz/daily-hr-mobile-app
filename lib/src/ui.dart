@@ -175,9 +175,7 @@ class EntryTile extends StatelessWidget {
   final Widget? leading;
   @override
   Widget build(BuildContext context) => Padding(
-    padding: EdgeInsets.only(
-      bottom: icon == null && leading == null ? 10 : 12,
-    ),
+    padding: EdgeInsets.only(bottom: icon == null && leading == null ? 10 : 12),
     child: Surface(
       padding: leading != null ? 18 : 14,
       onTap: onTap,

@@ -18,9 +18,11 @@ class DailyHrApp extends StatefulWidget {
   State<DailyHrApp> createState() => _DailyHrAppState();
 }
 
-class _DailyHrAppState extends State<DailyHrApp> {
+class _DailyHrAppState extends State<DailyHrApp> with WidgetsBindingObserver {
+  /// How often a signed-in account is re-checked with Supabase.
+  static const accessCheckInterval = Duration(minutes: 5);
   bool ready = false;
-  Timer? timer;
+  Timer? timer, accessTimer;
   @override
   void initState() {
     super.initState();
@@ -30,11 +32,25 @@ class _DailyHrAppState extends State<DailyHrApp> {
         if (mounted) setState(() => ready = true);
       });
     }
+    if (widget.store.auth != null) {
+      WidgetsBinding.instance.addObserver(this);
+      accessTimer = Timer.periodic(
+        accessCheckInterval,
+        (_) => widget.store.refreshAccess(),
+      );
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) widget.store.refreshAccess();
   }
 
   @override
   void dispose() {
     timer?.cancel();
+    accessTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -122,8 +138,8 @@ class SignInScreen extends StatefulWidget {
 class _SignInScreenState extends State<SignInScreen> {
   final form = GlobalKey<FormState>();
   final email = TextEditingController(), password = TextEditingController();
-  bool hr = false, visible = false, loading = false;
-  String? error;
+  bool visible = false, loading = false;
+  late String? error = widget.store.signedOutReason;
   @override
   void dispose() {
     email.dispose();
@@ -137,9 +153,7 @@ class _SignInScreenState extends State<SignInScreen> {
       loading = true;
       error = null;
     });
-    await Future<void>.delayed(const Duration(milliseconds: 450));
-    if (!mounted) return;
-    final result = widget.store.signIn(email.text.trim(), password.text, hr);
+    final result = await widget.store.signIn(email.text.trim(), password.text);
     if (mounted) {
       setState(() {
         loading = false;
@@ -266,67 +280,14 @@ class _SignInScreenState extends State<SignInScreen> {
                     ),
                     const SizedBox(height: 44),
                     ActionButton(
-                      loading
-                          ? 'Signing in…'
-                          : (error?.contains('needs a role') ?? false)
-                          ? 'Sign out'
-                          : 'Sign in',
-                      loading
-                          ? null
-                          : (error?.contains('needs a role') ?? false)
-                          ? () => setState(() {
-                              error = null;
-                              email.clear();
-                              password.clear();
-                            })
-                          : submit,
+                      loading ? 'Signing in…' : 'Sign in',
+                      loading ? null : submit,
                     ),
                     if (error != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 16),
                         child: Text(error!, style: TextStyle(color: charcoal)),
                       ),
-                    const SizedBox(height: 85),
-                    ActionButton(
-                      hr ? 'Try Employee demo' : 'Try HR Admin demo',
-                      loading
-                          ? null
-                          : () => setState(() {
-                              hr = !hr;
-                              error = null;
-                              email.clear();
-                              password.clear();
-                            }),
-                      secondary: true,
-                    ),
-                    ExpansionTile(
-                      title: const Text(
-                        'Local demo accounts',
-                        style: TextStyle(fontSize: 14),
-                      ),
-                      tilePadding: EdgeInsets.zero,
-                      children: [
-                        Text(
-                          'Fictional data saved on this device.\n${hr ? 'arun@dailyhr.example' : 'maya@dailyhr.example or nina@dailyhr.example'}\nPassword: DemoPass42',
-                        ),
-                        TextButton(
-                          onPressed: () => setState(() {
-                            email.text = hr
-                                ? 'arun@dailyhr.example'
-                                : 'maya@dailyhr.example';
-                            password.text = 'DemoPass42';
-                          }),
-                          child: const Text('Fill demo credentials'),
-                        ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('Simulate offline'),
-                          value: widget.store.offline,
-                          onChanged: (v) =>
-                              setState(() => widget.store.offline = v),
-                        ),
-                      ],
-                    ),
                     if (widget.store.persistenceError != null)
                       Text(widget.store.persistenceError!),
                   ],
@@ -434,8 +395,11 @@ class _WorkspaceState extends State<Workspace> {
           : r.first.status;
     }
 
-    void requests(String kind) =>
-        openPage(context, RequestsPage(store: s, kind: kind));
+    void requests(String kind) {
+      if (kind == 'Leave') s.refreshLeave();
+      openPage(context, RequestsPage(store: s, kind: kind));
+    }
+
     Widget quick(String title, String icon, VoidCallback action) => Surface(
       padding: 14,
       onTap: action,
