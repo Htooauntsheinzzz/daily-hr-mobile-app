@@ -165,19 +165,27 @@ class PreparePage extends StatelessWidget {
           onTap: () => editPayAmount(context, store, e, 3),
         ),
         const SizedBox(height: 28),
-        ActionButton(
-          'Calculate and review',
-          () => guarded(context, () {
-            final draft = store.calculate(e.id, month);
-            store.saveDraft(draft);
-            openPage(
-              context,
-              CalculatingPage(
-                next: PayslipPage(store: store, payslip: draft),
-              ),
-            );
-          }),
+        const Text(
+          'Calculating also checks approved Partial Leave (unpaid) and '
+          'working days without a check-in or approved leave.',
+          style: TextStyle(fontSize: 13),
         ),
+        const SizedBox(height: 16),
+        ActionButton('Calculate and review', () async {
+          final result = await store.preparePayslip(e.id, month);
+          if (!context.mounted) return;
+          final draft = result.payslip;
+          if (draft == null) {
+            toast(context, result.error ?? 'The draft could not be prepared.');
+            return;
+          }
+          openPage(
+            context,
+            CalculatingPage(
+              next: PayslipPage(store: store, payslip: draft),
+            ),
+          );
+        }),
       ];
     },
   );
@@ -372,10 +380,30 @@ class PayslipPage extends StatelessWidget {
                     '${hoursLabel(p.hours)}  ›',
                   ),
                 ),
-                DetailRow('Overtime rate', money(p.rate)),
+                DetailRow(
+                  'Overtime rate',
+                  '${money(p.rate)} × ${p.multiplier} per hour',
+                ),
                 DetailRow('Overtime pay', money(p.overtime)),
+                if (p.workingDays > 0)
+                  DetailRow(
+                    'Daily rate',
+                    '${money(p.dailyRate)} · ${p.workingDays} working days',
+                  ),
                 DetailRow('Employee insurance', money(p.insurance)),
                 DetailRow('Salary advance', money(p.advance)),
+                if (p.unpaidLeaveDays > 0)
+                  DetailRow(
+                    'Unpaid leave · ${daysLabel(p.unpaidLeaveDays)}',
+                    money(p.unpaidLeaveDeduction),
+                  ),
+                if (p.absentDays > 0)
+                  DetailRow(
+                    'Absences · ${daysLabel(p.absentDays)}',
+                    money(p.absenceDeduction),
+                  ),
+                DetailRow('Gross pay', money(p.gross)),
+                DetailRow('Total deductions', money(p.deductions)),
               ],
             ),
           ),
@@ -394,7 +422,8 @@ class PayslipPage extends StatelessWidget {
                 '${store.employee(p.employeeId).name} will be able to view ${money(p.net)} for ${monthLabel(DateTime.parse('${p.month}-01'))}.',
                 action: 'Publish',
               )) {
-                if (context.mounted) guarded(context, () => store.publish(p));
+                final error = await store.publishPayslip(p);
+                if (error != null && context.mounted) toast(context, error);
               }
             }),
             ActionButton(
@@ -447,15 +476,9 @@ Future<void> editPayAmount(
   int field,
 ) async {
   final current = [e.base, e.rate, e.insurance, e.advance][field];
-  final amounts = <List<double>>[
-    [30000, 32000],
-    [250, 300],
-    [500, 750],
-    [0, 250],
-  ][field];
   final result = await openPage<double>(
     context,
-    ChoicePage<double>(
+    AmountPage(
       store: store,
       title: [
         'Monthly base salary',
@@ -463,15 +486,76 @@ Future<void> editPayAmount(
         'Insurance deduction',
         'Salary advance',
       ][field],
-      back: 'Back',
       subtitle: e.name,
-      selected: current,
-      options: {
-        for (final value in {...amounts, current}) value: money(value),
-      },
+      initial: current,
     ),
   );
   if (result == null) return;
   final error = await store.savePay(e, field, result);
   if (error != null && context.mounted) toast(context, error);
+}
+
+/// Enter any amount in baht.
+class AmountPage extends StatefulWidget {
+  const AmountPage({
+    super.key,
+    required this.store,
+    required this.title,
+    required this.subtitle,
+    required this.initial,
+  });
+  final HrStore store;
+  final String title, subtitle;
+  final double initial;
+  @override
+  State<AmountPage> createState() => _AmountPageState();
+}
+
+class _AmountPageState extends State<AmountPage> {
+  late final amount = TextEditingController(
+    text: widget.initial == widget.initial.roundToDouble()
+        ? widget.initial.round().toString()
+        : widget.initial.toStringAsFixed(2),
+  );
+  final form = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    amount.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => HrPage(
+    store: widget.store,
+    title: widget.title,
+    back: 'Back',
+    builder: (context) => [
+      Text(widget.subtitle),
+      const SizedBox(height: 30),
+      Form(
+        key: form,
+        child: LabeledField(
+          'Amount · THB',
+          amount,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          validator: (v) {
+            final value = double.tryParse((v ?? '').replaceAll(',', '').trim());
+            if (value == null) return 'Enter an amount in baht.';
+            if (value < 0) return 'Enter an amount of 0 or more.';
+            return null;
+          },
+        ),
+      ),
+      const SizedBox(height: 20),
+      ActionButton('Save amount', () {
+        if (!form.currentState!.validate()) return;
+        Navigator.pop(
+          context,
+          double.parse(amount.text.replaceAll(',', '').trim()),
+        );
+      }),
+      ActionButton('Cancel', () => Navigator.pop(context), secondary: true),
+    ],
+  );
 }

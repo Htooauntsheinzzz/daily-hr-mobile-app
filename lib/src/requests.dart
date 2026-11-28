@@ -390,6 +390,12 @@ class RequestDetail extends StatelessWidget {
             children: [
               DetailRow('Shift', '${timeLabel(r.start)} – ${timeLabel(r.end)}'),
               DetailRow('Overtime', hoursLabel(r.hours)),
+              DetailRow(
+                r.status == 'Approved' ? 'Overtime pay' : 'Estimated pay',
+                '${money(store.employee(r.employeeId).rate)} × '
+                '${r.overtimeMultiplier ?? store.overtimeMultiplier} × '
+                '${hoursLabel(r.hours)} = ${money(store.overtimePay(r))}',
+              ),
               DetailRow('Status', r.status),
               const SizedBox(height: 14),
               Text(r.reason, style: const TextStyle(fontSize: 16)),
@@ -499,18 +505,12 @@ class _RequestFormState extends State<RequestForm> {
       await chooseLeaveDate(start: true);
     } else {
       final today = dayOnly(widget.store.clock());
-      final d = await openPage<DateTime>(
-        context,
-        ChoicePage<DateTime>(
-          store: widget.store,
-          title: 'Choose work date',
-          back: 'Request',
-          selected: startDate,
-          options: {
-            for (final d in [today, today.add(const Duration(days: 5))])
-              d: '${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d.weekday - 1]}, ${dateLabel(d)}',
-          },
-        ),
+      final d = await showDatePicker(
+        context: context,
+        helpText: 'Overtime work date',
+        firstDate: today.subtract(const Duration(days: 60)),
+        lastDate: today.add(const Duration(days: 30)),
+        initialDate: startDate ?? today,
       );
       if (d != null && mounted) setState(() => startDate = d);
     }
@@ -520,23 +520,22 @@ class _RequestFormState extends State<RequestForm> {
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   Future<void> chooseTime(bool start) async {
-    final values = start
-        ? [
-            const TimeOfDay(hour: 17, minute: 30),
-            const TimeOfDay(hour: 18, minute: 0),
-          ]
-        : [
-            const TimeOfDay(hour: 19, minute: 30),
-            const TimeOfDay(hour: 20, minute: 0),
-          ];
-    final t = await openPage<TimeOfDay>(
-      context,
-      ChoicePage<TimeOfDay>(
-        store: widget.store,
-        title: 'Choose ${start ? 'start' : 'end'} time',
-        back: 'Request',
-        selected: start ? startTime : endTime,
-        options: {for (final v in values) v: hhmm(v)},
+    final initial = start
+        ? startTime ?? const TimeOfDay(hour: 18, minute: 0)
+        : endTime ??
+              (startTime == null
+                  ? const TimeOfDay(hour: 20, minute: 0)
+                  : TimeOfDay(
+                      hour: (startTime!.hour + 2).clamp(0, 23),
+                      minute: startTime!.minute,
+                    ));
+    final t = await showTimePicker(
+      context: context,
+      helpText: start ? 'Overtime start time' : 'Overtime end time',
+      initialTime: initial,
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
+        child: child!,
       ),
     );
     if (t != null && mounted) {
@@ -553,18 +552,7 @@ class _RequestFormState extends State<RequestForm> {
   Future<void> editReason() async {
     final result = await openPage<String>(
       context,
-      leave
-          ? ReasonEditor(initial: reason)
-          : ChoicePage<String>(
-              store: widget.store,
-              title: 'Choose demo reason',
-              back: 'Request',
-              selected: reason,
-              options: const {
-                'Month-end reporting': 'Month-end reporting',
-                'Inventory reconciliation': 'Inventory reconciliation',
-              },
-            ),
+      ReasonEditor(initial: reason),
     );
     if (result != null && mounted) setState(() => reason = result);
   }
@@ -604,17 +592,18 @@ class _RequestFormState extends State<RequestForm> {
       });
       r = result.request;
     } else {
-      try {
-        r = widget.store.submit(
-          widget.kind,
-          'Overtime',
-          at(startTime)!,
-          at(endTime)!,
-          reason,
-        );
-      } on StateError catch (e) {
-        setState(() => error = e.message);
-      }
+      setState(() => submitting = true);
+      final result = await widget.store.submitOvertime(
+        at(startTime)!,
+        at(endTime)!,
+        reason,
+      );
+      if (!mounted) return;
+      setState(() {
+        submitting = false;
+        error = result.error;
+      });
+      r = result.request;
     }
     if (r == null || !mounted) return;
     final saved = r;

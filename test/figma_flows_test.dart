@@ -83,7 +83,11 @@ void main() {
         await tester.ensureVisible(find.text(entry.$1));
         await tester.tap(find.text(entry.$1));
         await tester.pumpAndSettle();
-        await tester.tap(find.text(money(entry.$2)));
+        await tester.enterText(
+          find.byType(TextFormField),
+          entry.$2.round().toString(),
+        );
+        await tester.tap(find.text('Save amount'));
         await tester.pumpAndSettle();
       }
       expect([e.base, e.rate, e.insurance, e.advance], [32000, 300, 500, 250]);
@@ -99,17 +103,33 @@ void main() {
       final store = HrStore(clock: () => DateTime(2026, 11, 19))
         ..session = 'DH-001';
       await mount(tester, RequestForm(store: store, kind: 'Overtime'));
-      for (final entry in [
-        ('Work date', 'Thu, 19 November 2026'),
-        ('Start time', '17:30'),
-        ('End time', '20:00'),
-        ('Reason', 'Inventory reconciliation'),
-      ]) {
-        await tester.tap(find.text(entry.$1));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text(entry.$2));
-        await tester.pumpAndSettle();
-      }
+      // Work date: any day from the calendar.
+      await tester.tap(find.text('Work date'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('19'));
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      // Start time 18:00 (the picker's default), end time 20:30.
+      await tester.tap(find.text('Start time'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('End time'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.keyboard_outlined));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextFormField).at(1), '30');
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      // Reason: typed freely.
+      await tester.tap(find.text('Reason'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextFormField),
+        'Inventory reconciliation',
+      );
+      await tester.tap(find.text('Save reason'));
+      await tester.pumpAndSettle();
       expect(find.text('2.5 hours'), findsOneWidget);
       await tester.ensureVisible(find.text('Submit request'));
       await tester.tap(find.text('Submit request'));

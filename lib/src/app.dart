@@ -326,7 +326,11 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   HrStore get s => widget.store;
-  void select(int i) => setState(() => tab = i);
+  void select(int i) {
+    if (i == 0) s.refreshDashboard();
+    setState(() => tab = i);
+  }
+
   Future<void> signOut() async {
     if (await confirm(
       context,
@@ -375,28 +379,23 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Widget dashboard() {
-    final shift = s.isHr
-        ? null
-        : s.openShift ?? s.shiftFor(s.session!, s.clock());
-    final state = shift == null
-        ? 'Ready to check in'
-        : shift.end == null
-        ? 'Working'
-        : 'Shift complete';
+    final hr = s.isHr ? s.hrSummary() : null;
+    final me = s.isHr ? null : s.employeeSummary();
     String recent(String kind) {
-      final r = s.visibleRequests(kind);
-      final pending = r.where((r) => r.status == 'Pending').length;
-      return s.isHr
-          ? pending == 0
-                ? 'No pending ${kind.toLowerCase()}'
-                : '$pending pending'
-          : r.isEmpty
-          ? 'No request'
-          : r.first.status;
+      if (hr != null) {
+        final pending = kind == 'Leave' ? hr.pendingLeave : hr.pendingOvertime;
+        return pending == 0
+            ? 'No pending ${kind.toLowerCase()}'
+            : '$pending pending';
+      }
+      return (kind == 'Leave'
+              ? me!.latestLeaveStatus
+              : me!.latestOvertimeStatus) ??
+          'No request';
     }
 
     void requests(String kind) {
-      if (kind == 'Leave') s.refreshLeave();
+      s.refreshLeave(); // also reloads overtime
       openPage(context, RequestsPage(store: s, kind: kind));
     }
 
@@ -506,26 +505,24 @@ class _WorkspaceState extends State<Workspace> {
                   style: const TextStyle(color: mist, fontSize: 15),
                 ),
                 const SizedBox(height: 16),
-                if (s.isHr)
+                if (hr != null) ...[
                   Row(
                     children: [
-                      stat(
-                        '${s.shifts.where((r) => dayKey(r.start) == dayKey(s.clock())).length}',
-                        'Checked in',
-                      ),
-                      stat(
-                        '${s.requests.where((r) => r.kind == 'Leave' && r.status == 'Approved' && !dayOnly(s.clock()).isBefore(dayOnly(r.start)) && !dayOnly(s.clock()).isAfter(dayOnly(r.end))).map((r) => r.employeeId).toSet().length}',
-                        'On leave',
-                      ),
-                      stat(
-                        '${s.employees.where((e) => e.active).length}',
-                        'Employees',
-                      ),
+                      stat('${hr.checkedIn}', 'Checked in'),
+                      stat('${hr.onLeave}', 'On leave'),
+                      stat('${hr.employees}', 'Employees'),
                     ],
-                  )
-                else ...[
+                  ),
+                  const SizedBox(height: 16),
                   Text(
-                    state,
+                    'Not checked in ${hr.notCheckedIn} · Working now '
+                    '${hr.workingNow}'
+                    '${hr.missedCheckOuts > 0 ? ' · Missed check-out ${hr.missedCheckOuts}' : ''}',
+                    style: const TextStyle(fontSize: 13, color: mist),
+                  ),
+                ] else ...[
+                  Text(
+                    me!.state,
                     style: const TextStyle(
                       fontSize: 25,
                       fontWeight: FontWeight.bold,
@@ -533,9 +530,14 @@ class _WorkspaceState extends State<Workspace> {
                   ),
                   const SizedBox(height: 18),
                   Text(
-                    'Working hours     ${shift == null ? '—' : '${shift.hours(s.clock()).toStringAsFixed(2)} h'}',
+                    'Working hours     ${me.state == 'Ready to check in' ? '—' : '${me.hoursToday.toStringAsFixed(2)} h'}',
                   ),
                   const SizedBox(height: 6),
+                  Text(
+                    'This month     ${me.hoursThisMonth.toStringAsFixed(2)} h · '
+                    '${me.daysWorkedThisMonth} ${me.daysWorkedThisMonth == 1 ? 'day' : 'days'}',
+                    style: const TextStyle(fontSize: 13, color: mist),
+                  ),
                 ],
               ],
             ),

@@ -69,6 +69,45 @@ abstract class HrBackend {
 
   /// The employee cancels their own pending request.
   Future<Map<String, dynamic>> cancelLeave(String requestId);
+
+  /// The overtime multiplier from `overtime_settings`, or null.
+  Future<double?> overtimeMultiplier();
+
+  /// Overtime requests: everyone's for HR, only their own for employees.
+  Future<List<Map<String, dynamic>>> overtimeRequests();
+
+  /// Saves overtime. Supabase calculates the hours.
+  Future<Map<String, dynamic>> requestOvertime(
+    DateTime start,
+    DateTime end,
+    String reason,
+  );
+
+  /// HR approves or rejects; approval fixes rate, multiplier and pay.
+  Future<Map<String, dynamic>> decideOvertime(
+    String requestId,
+    String decision,
+  );
+
+  Future<Map<String, dynamic>> cancelOvertime(String requestId);
+
+  /// Payslips: all for HR, only own published ones for employees.
+  Future<List<Map<String, dynamic>>> payslips();
+
+  /// `payroll_settings` (absence deduction), or null.
+  Future<Map<String, dynamic>?> payrollSettings();
+
+  /// HR prepares or recalculates a draft; returns the saved payslip row.
+  Future<Map<String, dynamic>> preparePayslip(String employeeId, String month);
+
+  /// HR publishes a checked draft; returns the saved payslip row.
+  Future<Map<String, dynamic>> publishPayslip(String employeeId, String month);
+
+  /// The signed-in employee's home summary.
+  Future<Map<String, dynamic>> employeeDashboard();
+
+  /// HR's attendance totals and pending approvals for today.
+  Future<Map<String, dynamic>> hrDashboard();
 }
 
 class SupabaseHrBackend implements HrBackend {
@@ -267,6 +306,82 @@ class SupabaseHrBackend implements HrBackend {
   @override
   Future<Map<String, dynamic>> cancelLeave(String requestId) =>
       _rpcRow('cancel_leave', {'request_id': requestId});
+
+  @override
+  Future<double?> overtimeMultiplier() => _run(() async {
+    final row = await client
+        .from('overtime_settings')
+        .select('multiplier')
+        .maybeSingle();
+    return (row?['multiplier'] as num?)?.toDouble();
+  });
+
+  @override
+  Future<List<Map<String, dynamic>>> overtimeRequests() => _run(() async {
+    final rows = await client
+        .from('work_requests')
+        .select()
+        .eq('kind', 'Overtime')
+        .order('created_at');
+    return List<Map<String, dynamic>>.from(rows);
+  });
+
+  static String _time(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Future<Map<String, dynamic>> requestOvertime(
+    DateTime start,
+    DateTime end,
+    String reason,
+  ) => _rpcRow('request_overtime', {
+    'work_date': _date(start),
+    'start_time': _time(start),
+    'end_time': _time(end),
+    'reason': reason,
+  });
+
+  @override
+  Future<Map<String, dynamic>> decideOvertime(
+    String requestId,
+    String decision,
+  ) => _rpcRow('decide_overtime', {
+    'request_id': requestId,
+    'decision': decision,
+  });
+
+  @override
+  Future<Map<String, dynamic>> cancelOvertime(String requestId) =>
+      _rpcRow('cancel_overtime', {'request_id': requestId});
+
+  @override
+  Future<List<Map<String, dynamic>>> payslips() => _run(() async {
+    final rows = await client.from('payslips').select().order('month');
+    return List<Map<String, dynamic>>.from(rows);
+  });
+
+  @override
+  Future<Map<String, dynamic>?> payrollSettings() =>
+      _run(() => client.from('payroll_settings').select().maybeSingle());
+
+  @override
+  Future<Map<String, dynamic>> preparePayslip(
+    String employeeId,
+    String month,
+  ) => _rpcRow('prepare_payslip', {'employee': employeeId, 'pay_month': month});
+
+  @override
+  Future<Map<String, dynamic>> publishPayslip(
+    String employeeId,
+    String month,
+  ) => _rpcRow('publish_payslip', {'employee': employeeId, 'pay_month': month});
+
+  @override
+  Future<Map<String, dynamic>> employeeDashboard() =>
+      _rpcRow('employee_dashboard', {});
+
+  @override
+  Future<Map<String, dynamic>> hrDashboard() => _rpcRow('hr_dashboard', {});
 
   @override
   Future<void> createLogin(String employeeId, String password) => _run(

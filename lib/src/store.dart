@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -226,6 +227,8 @@ class WorkRequest {
     this.reason, {
     this.status = 'Pending',
     this.unpaid = false,
+    this.overtimePay,
+    this.overtimeMultiplier,
   });
   final String id, employeeId, kind, type, reason;
   final DateTime start, end;
@@ -233,6 +236,9 @@ class WorkRequest {
 
   /// Partial Leave: these days reduce salary.
   final bool unpaid;
+
+  /// Approved overtime: pay and multiplier fixed by Supabase at approval.
+  double? overtimePay, overtimeMultiplier;
   double get hours => end.difference(start).inMinutes / 60;
   int get days => workingDays(start, end);
   Map<String, dynamic> toJson() => {
@@ -277,6 +283,8 @@ class WorkRequest {
     row['reason'] as String? ?? '',
     status: row['status'] as String,
     unpaid: row['unpaid'] as bool? ?? false,
+    overtimePay: (row['overtime_pay'] as num?)?.toDouble(),
+    overtimeMultiplier: (row['multiplier'] as num?)?.toDouble(),
   );
 }
 
@@ -358,6 +366,8 @@ class Shift {
   );
 }
 
+double _round2(double v) => (v * 100).round() / 100;
+
 class Payslip {
   Payslip(
     this.employeeId,
@@ -369,14 +379,52 @@ class Payslip {
     this.advance,
     this.entryIds, {
     this.published = false,
+    this.multiplier = 1,
+    this.fixedOvertimePay,
+    this.workingDays = 0,
+    this.unpaidLeaveDays = 0,
+    this.absentDays = 0,
+    this.fixedUnpaidLeaveDeduction,
+    this.fixedAbsenceDeduction,
   });
   final String employeeId, month;
   final double base, rate, hours, insurance, advance;
+
+  /// Overtime multiplier used for this payslip.
+  final double multiplier;
   final List<String> entryIds;
   bool published;
-  double get overtime => (hours * rate * 100).round() / 100;
-  double get net =>
-      (100 * (base + overtime - insurance - advance)).round() / 100;
+
+  /// Overtime pay saved by Supabase (the sum of approved entries).
+  final double? fixedOvertimePay;
+
+  /// Monday-to-Friday days in the month; the daily rate divides by this.
+  final int workingDays;
+
+  /// Approved Partial Leave days in the month (unpaid).
+  final double unpaidLeaveDays;
+
+  /// Working days with no check-in and no approved leave.
+  final int absentDays;
+
+  /// Deductions saved by Supabase when it prepared the payslip.
+  final double? fixedUnpaidLeaveDeduction, fixedAbsenceDeduction;
+
+  /// Overtime Pay = Hourly Rate × Overtime Multiplier × Overtime Hours.
+  double get overtime => fixedOvertimePay ?? _round2(hours * rate * multiplier);
+
+  /// Base salary ÷ working days.
+  double get dailyRate => workingDays == 0 ? 0 : _round2(base / workingDays);
+  double get unpaidLeaveDeduction =>
+      fixedUnpaidLeaveDeduction ??
+      (workingDays == 0 ? 0 : _round2(base * unpaidLeaveDays / workingDays));
+  double get absenceDeduction =>
+      fixedAbsenceDeduction ??
+      (workingDays == 0 ? 0 : _round2(base * absentDays / workingDays));
+  double get gross => _round2(base + overtime);
+  double get deductions =>
+      _round2(insurance + advance + unpaidLeaveDeduction + absenceDeduction);
+  double get net => _round2(gross - deductions);
   String get id => '$employeeId/$month';
   Map<String, dynamic> toJson() => {
     'employeeId': employeeId,
@@ -388,7 +436,15 @@ class Payslip {
     'advance': advance,
     'entryIds': entryIds,
     'published': published,
+    'multiplier': multiplier,
+    'fixedOvertimePay': fixedOvertimePay,
+    'workingDays': workingDays,
+    'unpaidLeaveDays': unpaidLeaveDays,
+    'absentDays': absentDays,
+    'fixedUnpaidLeaveDeduction': fixedUnpaidLeaveDeduction,
+    'fixedAbsenceDeduction': fixedAbsenceDeduction,
   };
+  static double? _num(Object? v) => (v as num?)?.toDouble();
   factory Payslip.fromJson(Map<String, dynamic> j) => Payslip(
     j['employeeId'],
     j['month'],
@@ -399,6 +455,33 @@ class Payslip {
     (j['advance'] as num).toDouble(),
     List<String>.from(j['entryIds']),
     published: j['published'],
+    multiplier: _num(j['multiplier']) ?? 1,
+    fixedOvertimePay: _num(j['fixedOvertimePay']),
+    workingDays: j['workingDays'] as int? ?? 0,
+    unpaidLeaveDays: _num(j['unpaidLeaveDays']) ?? 0,
+    absentDays: j['absentDays'] as int? ?? 0,
+    fixedUnpaidLeaveDeduction: _num(j['fixedUnpaidLeaveDeduction']),
+    fixedAbsenceDeduction: _num(j['fixedAbsenceDeduction']),
+  );
+
+  /// A row from the Supabase `payslips` table: every amount as saved.
+  factory Payslip.fromRow(Map<String, dynamic> row) => Payslip(
+    row['employee_id'] as String,
+    row['month'] as String,
+    _num(row['base_salary']) ?? 0,
+    _num(row['overtime_rate']) ?? 0,
+    _num(row['overtime_hours']) ?? 0,
+    _num(row['insurance']) ?? 0,
+    _num(row['advance']) ?? 0,
+    List<String>.from(row['overtime_request_ids'] as List? ?? const []),
+    published: row['published'] as bool? ?? false,
+    multiplier: _num(row['multiplier']) ?? 1,
+    fixedOvertimePay: _num(row['overtime_pay']),
+    workingDays: (row['working_days'] as num?)?.toInt() ?? 0,
+    unpaidLeaveDays: _num(row['unpaid_leave_days']) ?? 0,
+    absentDays: (row['absent_days'] as num?)?.toInt() ?? 0,
+    fixedUnpaidLeaveDeduction: _num(row['unpaid_leave_deduction']),
+    fixedAbsenceDeduction: _num(row['absence_deduction']),
   );
 }
 
@@ -416,6 +499,65 @@ class HrNotice {
 }
 
 /// Fictional local repository; production authorization belongs in the backend.
+/// HR overview numbers for today.
+class HrSummary {
+  const HrSummary({
+    required this.employees,
+    required this.checkedIn,
+    required this.workingNow,
+    required this.onLeave,
+    required this.notCheckedIn,
+    required this.missedCheckOuts,
+    required this.hoursWorked,
+    required this.pendingLeave,
+    required this.pendingOvertime,
+  });
+  final int employees, checkedIn, workingNow, onLeave, notCheckedIn;
+  final int missedCheckOuts, pendingLeave, pendingOvertime;
+  final double hoursWorked;
+
+  static int _int(Object? v) => (v as num?)?.toInt() ?? 0;
+  factory HrSummary.fromRow(Map<String, dynamic> row) => HrSummary(
+    employees: _int(row['active_employees']),
+    checkedIn: _int(row['checked_in']),
+    workingNow: _int(row['working_now']),
+    onLeave: _int(row['on_leave']),
+    notCheckedIn: _int(row['not_checked_in']),
+    missedCheckOuts: _int(row['missed_check_outs']),
+    hoursWorked: (row['hours_worked'] as num?)?.toDouble() ?? 0,
+    pendingLeave: _int(row['pending_leave']),
+    pendingOvertime: _int(row['pending_overtime']),
+  );
+}
+
+/// The employee's home numbers for today.
+class EmployeeSummary {
+  const EmployeeSummary({
+    required this.state,
+    required this.hoursToday,
+    required this.hoursThisMonth,
+    required this.daysWorkedThisMonth,
+    required this.pendingRequests,
+    this.latestLeaveStatus,
+    this.latestOvertimeStatus,
+  });
+  final String state;
+  final double hoursToday, hoursThisMonth;
+  final int daysWorkedThisMonth, pendingRequests;
+  final String? latestLeaveStatus, latestOvertimeStatus;
+
+  factory EmployeeSummary.fromRow(Map<String, dynamic> row) => EmployeeSummary(
+    state: row['state'] as String? ?? 'Ready to check in',
+    hoursToday: (row['hours_today'] as num?)?.toDouble() ?? 0,
+    hoursThisMonth: (row['hours_this_month'] as num?)?.toDouble() ?? 0,
+    daysWorkedThisMonth: (row['days_worked_this_month'] as num?)?.toInt() ?? 0,
+    pendingRequests: (row['pending_requests'] as num?)?.toInt() ?? 0,
+    latestLeaveStatus: (row['latest_leave'] as Map?)?['status'] as String?,
+    latestOvertimeStatus:
+        (row['latest_overtime'] as Map?)?['status'] as String?,
+  );
+}
+
 class HrStore extends ChangeNotifier {
   ValueChanged<int>? navigateWorkspace;
   HrStore({
@@ -580,6 +722,9 @@ class HrStore extends ChangeNotifier {
   }
 
   Future<void> changed() {
+    // Records changed (a check-in, a request, a decision): refresh the
+    // dashboard numbers from Supabase in the background.
+    if (backend != null && session != null) unawaited(refreshDashboard());
     final snapshot = jsonEncode({
       'employees': employees,
       'requests': requests,
@@ -769,6 +914,7 @@ class HrStore extends ChangeNotifier {
       await _syncShifts(remote);
       await _syncLeave(remote);
       syncError = null;
+      await refreshDashboard();
     } on BackendFailure catch (e) {
       syncError = e.message;
     }
@@ -1061,6 +1207,59 @@ class HrStore extends ChangeNotifier {
     requests
       ..removeWhere((r) => r.kind == 'Leave')
       ..addAll(rows.map(WorkRequest.fromRow));
+    await _syncOvertime(remote);
+    await _syncPayslips(remote);
+  }
+
+  /// Overtime Multiplier in: Hourly Rate × Overtime Multiplier × Hours.
+  double overtimeMultiplier = 1.5;
+
+  Future<void> _syncOvertime(HrBackend remote) async {
+    overtimeMultiplier =
+        await remote.overtimeMultiplier() ?? overtimeMultiplier;
+    final rows = await remote.overtimeRequests();
+    requests
+      ..removeWhere((r) => r.kind == 'Overtime')
+      ..addAll(rows.map(WorkRequest.fromRow));
+  }
+
+  /// Overtime pay for a request: fixed by Supabase once approved, otherwise
+  /// estimated with the employee's hourly rate and the current multiplier.
+  double overtimePay(WorkRequest r) =>
+      r.overtimePay ??
+      (employee(r.employeeId).rate * overtimeMultiplier * r.hours * 100)
+              .round() /
+          100;
+
+  /// An employee saves overtime. Supabase calculates the hours.
+  Future<({WorkRequest? request, String? error})> submitOvertime(
+    DateTime start,
+    DateTime end,
+    String reason,
+  ) async {
+    final remote = backend;
+    if (remote == null) {
+      try {
+        return (
+          request: submit('Overtime', 'Overtime', start, end, reason),
+          error: null,
+        );
+      } on StateError catch (e) {
+        return (request: null, error: e.message);
+      }
+    }
+    if (session == null || isHr) {
+      return (request: null, error: 'Switch to your employee view first.');
+    }
+    try {
+      final row = await remote.requestOvertime(start, end, reason);
+      final request = WorkRequest.fromRow(row);
+      requests.add(request);
+      await changed();
+      return (request: request, error: null);
+    } on BackendFailure catch (e) {
+      return (request: null, error: e.message);
+    }
   }
 
   /// Reloads leave requests, for example when HR opens the review queue.
@@ -1120,7 +1319,7 @@ class HrStore extends ChangeNotifier {
   /// error message, or null when it worked.
   Future<String?> decideRequest(WorkRequest r, String status) async {
     final remote = backend;
-    if (remote == null || r.kind != 'Leave') {
+    if (remote == null) {
       try {
         decide(r, status);
         return null;
@@ -1128,11 +1327,18 @@ class HrStore extends ChangeNotifier {
         return e.message;
       }
     }
+    final leave = r.kind == 'Leave';
     try {
       final row = status == 'Cancelled'
-          ? await remote.cancelLeave(r.id)
-          : await remote.decideLeave(r.id, status);
+          ? await (leave
+                ? remote.cancelLeave(r.id)
+                : remote.cancelOvertime(r.id))
+          : await (leave
+                ? remote.decideLeave(r.id, status)
+                : remote.decideOvertime(r.id, status));
       r.status = row['status'] as String;
+      r.overtimePay = (row['overtime_pay'] as num?)?.toDouble();
+      r.overtimeMultiplier = (row['multiplier'] as num?)?.toDouble();
     } on BackendFailure catch (e) {
       return e.message;
     }
@@ -1148,6 +1354,112 @@ class HrStore extends ChangeNotifier {
     }
     await changed();
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dashboards (from Supabase when connected, otherwise worked out here)
+  // ---------------------------------------------------------------------------
+
+  HrSummary? _hrSummary;
+  EmployeeSummary? _employeeSummary;
+
+  /// Reloads the dashboard numbers for the open workspace.
+  Future<void> refreshDashboard() async {
+    final remote = backend;
+    if (remote == null || session == null) return;
+    try {
+      if (isHr) {
+        _hrSummary = HrSummary.fromRow(await remote.hrDashboard());
+      } else {
+        _employeeSummary = EmployeeSummary.fromRow(
+          await remote.employeeDashboard(),
+        );
+      }
+    } on BackendFailure {
+      return; // Keep showing the numbers worked out from loaded records.
+    }
+    notifyListeners();
+  }
+
+  HrSummary hrSummary() {
+    if (backend != null && _hrSummary != null) return _hrSummary!;
+    final today = clock();
+    final active = employees.where((e) => e.active).map((e) => e.id).toSet();
+    final todays = shifts.where(
+      (s) => active.contains(s.employeeId) && dayKey(s.start) == dayKey(today),
+    );
+    final checkedIn = todays.map((s) => s.employeeId).toSet();
+    final onLeave = requests
+        .where(
+          (r) =>
+              r.kind == 'Leave' &&
+              r.status == 'Approved' &&
+              active.contains(r.employeeId) &&
+              !checkedIn.contains(r.employeeId) &&
+              !dayOnly(today).isBefore(dayOnly(r.start)) &&
+              !dayOnly(today).isAfter(dayOnly(r.end)),
+        )
+        .map((r) => r.employeeId)
+        .toSet();
+    final weekday = today.weekday <= 5;
+    return HrSummary(
+      employees: active.length,
+      checkedIn: checkedIn.length,
+      workingNow: todays
+          .where((s) => s.end == null && !s.missedCheckOut)
+          .length,
+      onLeave: onLeave.length,
+      notCheckedIn: weekday
+          ? (active.length - checkedIn.length - onLeave.length).clamp(
+              0,
+              1 << 30,
+            )
+          : 0,
+      missedCheckOuts: todays.where((s) => s.missedCheckOut).length,
+      hoursWorked: todays
+          .where((s) => s.end != null)
+          .fold<double>(0, (n, s) => n + s.hours(today)),
+      pendingLeave: requests
+          .where((r) => r.kind == 'Leave' && r.status == 'Pending')
+          .length,
+      pendingOvertime: requests
+          .where((r) => r.kind == 'Overtime' && r.status == 'Pending')
+          .length,
+    );
+  }
+
+  EmployeeSummary employeeSummary() {
+    if (backend != null && _employeeSummary != null) return _employeeSummary!;
+    final now = clock();
+    final id = session!;
+    final shift = openShift ?? shiftFor(id, now);
+    final mine = shifts.where(
+      (s) =>
+          s.employeeId == id &&
+          s.start.year == now.year &&
+          s.start.month == now.month,
+    );
+    String? latest(String kind) => requests
+        .where((r) => r.employeeId == id && r.kind == kind)
+        .lastOrNull
+        ?.status;
+    return EmployeeSummary(
+      state: shift == null
+          ? 'Ready to check in'
+          : shift.end == null
+          ? 'Working'
+          : 'Shift complete',
+      hoursToday: shift == null ? 0 : shift.hours(now),
+      hoursThisMonth: mine
+          .where((s) => s.end != null)
+          .fold<double>(0, (n, s) => n + s.hours(now)),
+      daysWorkedThisMonth: mine.length,
+      pendingRequests: requests
+          .where((r) => r.employeeId == id && r.status == 'Pending')
+          .length,
+      latestLeaveStatus: latest('Leave'),
+      latestOvertimeStatus: latest('Overtime'),
+    );
   }
 
   /// HR administrators can't approve or reject their own requests.
@@ -1380,10 +1692,68 @@ class HrStore extends ChangeNotifier {
             monthKey(r.start) == month,
       )
       .toList();
+
+  /// Deduct working days with no check-in and no approved leave. Off in
+  /// demo mode (the sample data has no attendance); Supabase sets it.
+  bool deductAbsences = false;
+
+  /// Days before this never count as absences.
+  DateTime? absencesFrom;
+
+  /// The same calculation Supabase runs in `payroll_calculation`.
   Payslip calculate(String id, String month) {
     requireHr();
     final e = employee(id);
+    final first = DateTime.parse('$month-01');
+    final last = DateTime(first.year, first.month + 1, 0);
     final entries = approvedEntries(id, month);
+    final fixed = entries.any((r) => r.overtimePay != null)
+        ? _round2(
+            entries.fold<double>(
+              0,
+              (n, r) =>
+                  n + (r.overtimePay ?? r.hours * e.rate * overtimeMultiplier),
+            ),
+          )
+        : null;
+    final leave = requests.where(
+      (r) =>
+          r.employeeId == id &&
+          r.kind == 'Leave' &&
+          r.status == 'Approved' &&
+          !dayOnly(r.start).isAfter(last) &&
+          !dayOnly(r.end).isBefore(first),
+    );
+    final unpaidDays = leave
+        .where((r) => r.unpaid)
+        .fold<int>(
+          0,
+          (n, r) =>
+              n +
+              workingDays(
+                dayOnly(r.start).isBefore(first) ? first : dayOnly(r.start),
+                dayOnly(r.end).isAfter(last) ? last : dayOnly(r.end),
+              ),
+        );
+    var absent = 0;
+    if (deductAbsences) {
+      var day = first;
+      final from = absencesFrom;
+      if (from != null && dayOnly(from).isAfter(day)) day = dayOnly(from);
+      final yesterday = dayOnly(clock()).subtract(const Duration(days: 1));
+      final end = yesterday.isBefore(last) ? yesterday : last;
+      for (; !day.isAfter(end); day = day.add(const Duration(days: 1))) {
+        if (day.weekday > 5) continue;
+        final d = day;
+        if (shiftFor(id, d) != null) continue;
+        if (leave.any(
+          (r) => !d.isBefore(dayOnly(r.start)) && !d.isAfter(dayOnly(r.end)),
+        )) {
+          continue;
+        }
+        absent++;
+      }
+    }
     return Payslip(
       id,
       month,
@@ -1393,7 +1763,93 @@ class HrStore extends ChangeNotifier {
       e.insurance,
       e.advance,
       entries.map((r) => r.id).toList(),
+      multiplier: overtimeMultiplier,
+      fixedOvertimePay: fixed,
+      workingDays: workingDays(first, last),
+      unpaidLeaveDays: unpaidDays.toDouble(),
+      absentDays: absent,
     );
+  }
+
+  /// HR prepares a draft. With Supabase, it calculates and saves the draft
+  /// and its line items. Returns the draft, or an error message.
+  Future<({Payslip? payslip, String? error})> preparePayslip(
+    String id,
+    String month,
+  ) async {
+    final remote = backend;
+    if (remote == null) {
+      try {
+        final draft = calculate(id, month);
+        saveDraft(draft);
+        return (payslip: draft, error: null);
+      } on StateError catch (e) {
+        return (payslip: null, error: e.message);
+      }
+    }
+    if (id == ownEmployeeId) {
+      return (
+        payslip: null,
+        error: 'Another HR administrator must prepare your payslip.',
+      );
+    }
+    try {
+      final draft = Payslip.fromRow(await remote.preparePayslip(id, month));
+      payslips.removeWhere((p) => p.id == draft.id);
+      payslips.add(draft);
+      await changed();
+      return (payslip: draft, error: null);
+    } on BackendFailure catch (e) {
+      return (payslip: null, error: e.message);
+    }
+  }
+
+  /// HR publishes a checked draft. Supabase recalculates and refuses if
+  /// anything changed since the draft. Returns an error message, or null.
+  Future<String?> publishPayslip(Payslip draft) async {
+    final remote = backend;
+    if (remote == null) {
+      try {
+        publish(draft);
+        return null;
+      } on StateError catch (e) {
+        return e.message;
+      }
+    }
+    try {
+      final saved = Payslip.fromRow(
+        await remote.publishPayslip(draft.employeeId, draft.month),
+      );
+      draft.published = true;
+      payslips.removeWhere((p) => p.id == saved.id);
+      payslips.add(saved);
+    } on BackendFailure catch (e) {
+      return e.message;
+    }
+    notices.add(
+      HrNotice(
+        draft.employeeId,
+        'Payslip published · ${monthLabel(DateTime.parse('${draft.month}-01'))}',
+        'payslip',
+        draft.id,
+      ),
+    );
+    await changed();
+    return null;
+  }
+
+  /// Payslips live in Supabase: all for HR, own published ones for employees.
+  Future<void> _syncPayslips(HrBackend remote) async {
+    final settings = await remote.payrollSettings();
+    if (settings != null) {
+      deductAbsences = settings['deduct_absences'] as bool? ?? true;
+      final from = settings['absences_from'] as String?;
+      absencesFrom = from == null ? null : DateTime.parse(from);
+    }
+    final rows = await remote.payslips();
+    payslips
+      ..clear()
+      ..addAll(rows.map(Payslip.fromRow));
   }
 
   /// Stores the reviewed draft so the monthly register can show `Draft`.

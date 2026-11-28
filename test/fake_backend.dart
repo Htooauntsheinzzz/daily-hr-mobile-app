@@ -305,4 +305,226 @@ class FakeBackend implements HrBackend {
     row['status'] = 'Cancelled';
     return Map.of(row);
   }
+
+  // Overtime, following the rules in the overtime migration.
+  final overtimeRows = <Map<String, dynamic>>[];
+  double multiplier = 1.5;
+  int overtimeCalls = 0;
+
+  @override
+  Future<double?> overtimeMultiplier() async => multiplier;
+
+  @override
+  Future<List<Map<String, dynamic>>> overtimeRequests() async {
+    _check();
+    return [for (final row in overtimeRows) Map.of(row)];
+  }
+
+  static String _utc(DateTime local) => DateTime.utc(
+    local.year,
+    local.month,
+    local.day,
+    local.hour,
+    local.minute,
+  ).subtract(const Duration(hours: 7)).toIso8601String();
+
+  @override
+  Future<Map<String, dynamic>> requestOvertime(
+    DateTime start,
+    DateTime end,
+    String reason,
+  ) async {
+    _check();
+    overtimeCalls++;
+    if (me == null) {
+      throw const BackendFailure('Only active employees can request overtime.');
+    }
+    if (!end.isAfter(start)) {
+      throw const BackendFailure(
+        'End time must be after start time on the same day.',
+      );
+    }
+    final row = <String, dynamic>{
+      'id': 'ot-${overtimeRows.length + 1}',
+      'employee_id': me,
+      'kind': 'Overtime',
+      'type': 'Overtime',
+      'start_at': _utc(start),
+      'end_at': _utc(end),
+      'reason': reason,
+      'status': 'Pending',
+      'hours': end.difference(start).inMinutes / 60,
+    };
+    overtimeRows.add(row);
+    return Map.of(row);
+  }
+
+  @override
+  Future<Map<String, dynamic>> decideOvertime(
+    String requestId,
+    String decision,
+  ) async {
+    _check();
+    overtimeCalls++;
+    if (!hr) throw const BackendFailure('HR access required.');
+    final row = overtimeRows.firstWhere((r) => r['id'] == requestId);
+    if (row['status'] != 'Pending') {
+      throw const BackendFailure('This request has already been resolved.');
+    }
+    row['status'] = decision;
+    if (decision == 'Approved') {
+      final rate =
+          (rows[row['employee_id']]?['overtime_rate'] as num?)?.toDouble() ??
+          250;
+      row['hourly_rate'] = rate;
+      row['multiplier'] = multiplier;
+      row['overtime_pay'] = rate * multiplier * (row['hours'] as num);
+    }
+    return Map.of(row);
+  }
+
+  @override
+  Future<Map<String, dynamic>> cancelOvertime(String requestId) async {
+    _check();
+    final row = overtimeRows.firstWhere((r) => r['id'] == requestId);
+    if (row['employee_id'] != me || row['status'] != 'Pending') {
+      throw const BackendFailure(
+        'Only your own pending requests can be cancelled.',
+      );
+    }
+    row['status'] = 'Cancelled';
+    return Map.of(row);
+  }
+
+  // Payroll, a simplified stand-in for payroll_calculation.
+  final payslipRows = <String, Map<String, dynamic>>{};
+  bool deductAbsences = true;
+  int payrollCalls = 0;
+
+  /// When set, publish refuses as if pay data changed after the draft.
+  bool payDataChanged = false;
+
+  @override
+  Future<List<Map<String, dynamic>>> payslips() async {
+    _check();
+    return [
+      for (final row in payslipRows.values)
+        if (hr || (row['employee_id'] == me && row['published'] == true))
+          Map.of(row),
+    ];
+  }
+
+  @override
+  Future<Map<String, dynamic>?> payrollSettings() async => {
+    'deduct_absences': deductAbsences,
+    'absences_from': '2026-11-01',
+  };
+
+  @override
+  Future<Map<String, dynamic>> preparePayslip(
+    String employeeId,
+    String month,
+  ) async {
+    _check();
+    payrollCalls++;
+    if (!hr) throw const BackendFailure('HR access required.');
+    final key = '$employeeId/$month';
+    if (payslipRows[key]?['published'] == true) {
+      throw const BackendFailure('This payslip is already published.');
+    }
+    final e = rows[employeeId]!;
+    final entries = overtimeRows.where(
+      (r) =>
+          r['employee_id'] == employeeId &&
+          r['status'] == 'Approved' &&
+          (r['start_at'] as String).startsWith(month),
+    );
+    final row = <String, dynamic>{
+      'employee_id': employeeId,
+      'month': month,
+      'base_salary': e['base_salary'],
+      'overtime_rate': e['overtime_rate'],
+      'multiplier': multiplier,
+      'overtime_hours': entries.fold<num>(0, (n, r) => n + (r['hours'] as num)),
+      'overtime_pay': entries.fold<num>(
+        0,
+        (n, r) => n + (r['overtime_pay'] as num),
+      ),
+      'overtime_request_ids': [for (final r in entries) r['id']],
+      'insurance': e['insurance'],
+      'advance': e['advance'],
+      'working_days': 21,
+      'unpaid_leave_days': 0,
+      'unpaid_leave_deduction': 0,
+      'absent_days': deductAbsences ? 2 : 0,
+      'absence_deduction': deductAbsences
+          ? ((e['base_salary'] as num) * 2 / 21 * 100).round() / 100
+          : 0,
+      'published': false,
+    };
+    payslipRows[key] = row;
+    return Map.of(row);
+  }
+
+  @override
+  Future<Map<String, dynamic>> publishPayslip(
+    String employeeId,
+    String month,
+  ) async {
+    _check();
+    payrollCalls++;
+    final row = payslipRows['$employeeId/$month'];
+    if (row == null) throw const BackendFailure('Prepare the draft first.');
+    if (row['published'] == true) {
+      throw const BackendFailure('This payslip is already published.');
+    }
+    if (payDataChanged) {
+      throw const BackendFailure(
+        'Pay data changed since this draft was prepared. Calculate and review again.',
+      );
+    }
+    row['published'] = true;
+    return Map.of(row);
+  }
+
+  // Dashboards: tests set what Supabase would return.
+  Map<String, dynamic> employeeSummary = {
+    'state': 'Ready to check in',
+    'hours_today': 0,
+    'hours_this_month': 0,
+    'days_worked_this_month': 0,
+    'pending_requests': 0,
+  };
+  Map<String, dynamic> hrSummary = {
+    'active_employees': 3,
+    'checked_in': 0,
+    'working_now': 0,
+    'on_leave': 0,
+    'not_checked_in': 3,
+    'missed_check_outs': 0,
+    'hours_worked': 0,
+    'pending_leave': 0,
+    'pending_overtime': 0,
+  };
+  int dashboardCalls = 0;
+
+  @override
+  Future<Map<String, dynamic>> employeeDashboard() async {
+    _check();
+    dashboardCalls++;
+    if (me == null) {
+      throw const BackendFailure(
+        'Only active employees have an employee dashboard.',
+      );
+    }
+    return Map.of(employeeSummary);
+  }
+
+  @override
+  Future<Map<String, dynamic>> hrDashboard() async {
+    _check();
+    dashboardCalls++;
+    if (!hr) throw const BackendFailure('HR access required.');
+    return Map.of(hrSummary);
+  }
 }

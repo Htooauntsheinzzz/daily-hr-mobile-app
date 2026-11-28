@@ -335,14 +335,15 @@ void main() {
     }
     final draft = store.calculate('DH-001', '2026-11');
     expect(draft.hours, 2.5);
-    expect(draft.overtime, 625);
-    expect(draft.net, 29875);
+    // Overtime Pay = Hourly Rate × Overtime Multiplier × Overtime Hours.
+    expect(draft.overtime, 937.5);
+    expect(draft.net, 30187.5);
     expect(draft.entryIds, [a.id]);
     store.publish(draft);
     expect(b.status, 'Pending');
     expect(store.notices.last.target, draft.id);
     store.employee('DH-001').base = 40000;
-    expect(draft.net, 29875);
+    expect(draft.net, 30187.5);
     expect(() => store.publish(draft), throwsStateError);
     store.session = 'DH-001';
     expect(store.visiblePayslips().length, 2);
